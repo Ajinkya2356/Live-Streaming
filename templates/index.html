@@ -4,9 +4,60 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Live Video Stream</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 50vh;
+            margin: 0;
+            background-color: #f0f0f0;
+        }
+        img {
+            width: 50%;
+            max-width: 380px;
+            margin-top: 300px;
+            border: 1px solid black;
+            height:380px;
+        }
+        button {
+            margin-top: 20px;
+            padding: 10px 20px;
+            font-size: 16px;
+        }
+        #captureResult {
+            margin-top: 20px;
+            width: 80%;
+            max-width: 640px;
+        }
+    </style>
 </head>
 <body>
     <h1>Live Video Stream</h1>
-    <img src="{{ url_for('video_feed') }}" alt="Live Video Feed" style="width: 100%; max-width: 640px; border: 1px solid black;">
+    <img src="{{ url_for('video_feed') }}" alt="Live Video Feed">
+    <button id="captureButton">Capture</button>
+    <div id="captureResult"></div>
+
+    <script>
+        document.getElementById('captureButton').addEventListener('click', function() {
+            fetch('/capture', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                const resultDiv = document.getElementById('captureResult');
+                if (data.error) {
+                    resultDiv.innerHTML = `<p style="color: red;">Error: ${data.error}</p>`;
+                } else {
+                    resultDiv.innerHTML = '<p>Captured images:</p><ul>' + data.captured_images.map(image => `<li>${image}</li>`).join('') + '</ul>';
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                document.getElementById('captureResult').innerHTML = `<p style="color: red;">Error: ${error.message}</p>`;
+            });
+        });
+    </script>
 </body>
 </html>
