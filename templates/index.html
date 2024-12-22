@@ -42,7 +42,7 @@
         width: 90%;
       "
     >
-      <div style="display: flex; flex-direction: column; align-items: center;">
+      <div style="display: flex; flex-direction: column; align-items: center">
         <h1>Live Video Stream</h1>
         <img src="{{ url_for('video_feed') }}" alt="Live Video Feed" />
         <input
@@ -54,6 +54,7 @@
       </div>
       <div style="display: flex; flex-direction: column; align-items: center">
         <h2>Highlighted Image</h2>
+        <h3 id="result"></h3>
         <img
           id="highlightedImage"
           src=""
@@ -93,6 +94,10 @@
                   document.getElementById("highlightedImage");
                 highlightedImage.src = data.highlighted_image;
                 highlightedImage.style.display = "block";
+                const result = document.getElementById("result");
+                result.innerHTML = data.res;
+                result.style.display = "block";
+                result.style.color = data.res == True ? "green" : "red";
               }
             })
             .catch((error) => {

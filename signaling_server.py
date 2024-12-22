@@ -5,6 +5,8 @@ import numpy as np
 from flask_cors import CORS
 import os
 import base64
+from skimage.metrics import structural_similarity as ssim
+import time
 
 app = Flask(__name__)
 
@@ -75,12 +77,14 @@ if not os.path.exists(save_directory):
     os.makedirs(save_directory)
 
 
-def capture_frame(frame):
-    roi_image = frame
-    filename = os.path.join(save_directory, f"captured.png")
-    cv2.imwrite(filename, roi_image)
-    print(f"Captured and saved: {filename}")
-    return filename
+def capture_frame(frame, num_captures=4):
+    captured_files = []
+    for i in range(num_captures):
+        filename = os.path.join(save_directory, f"captured_{i}.png")
+        cv2.imwrite(filename, frame)
+        captured_files.append(filename)
+        cv2.waitKey(50)
+    return captured_files
 
 
 @app.route("/")
@@ -128,7 +132,6 @@ def align_images(master, input):
         singlePointColor=(255, 0, 0),
         flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS,
     )
-    cv2.imwrite("keypoint_matches.png", matches_image)
     if len(good_matches) >= 4:
         pts1 = np.float32([keypoints1[m.queryIdx].pt for m in good_matches]).reshape(
             -1, 1, 2
@@ -161,61 +164,102 @@ def align_images(master, input):
     else:
         raise ValueError("Not enough good matches found for alignment")
 
-def find_defect(master, img_path):
-    input_path = img_path
-    input = cv2.imread(input_path)
-    input = cv2.resize(input, (master.shape[1], master.shape[0]))
-    difference, aligned_image, mask_contours, mask_master = align_images(master, input)
-    cv2.imwrite("difference.png", difference)
-    _, thresholded_diff = cv2.threshold(
-        difference, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
-    )
-    cv2.imwrite("thresholded_diff.png", thresholded_diff)
-    contours, _ = cv2.findContours(
-        thresholded_diff, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-    )
-    highlighted_image = aligned_image.copy()
-    for contour in contours:
-        found = False
-        for c in mask_contours:
-            if cv2.matchShapes(contour, c, 1, 0.0) < 15:
-                found = True
-                break
-        if found:
-            cv2.drawContours(highlighted_image, [contour], -1, (0, 0, 255), 2)
-    return highlighted_image
+
+def find_defect(master, images):
+    ssim_values = [0, 0, 0]
+    classes = [0, 0, 0]
+    differences = [None, None, None, None]
+    for i, img_path in enumerate(images):
+        input_path = img_path
+        input = cv2.imread(input_path)
+        input = cv2.resize(input, (master.shape[1], master.shape[0]))
+        difference, aligned_image, mask_contours, mask_master = align_images(
+            master, input
+        )
+        _, thresholded_diff = cv2.threshold(
+            difference, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+        )
+        mask = cv2.imread("diff_ref.png", cv2.IMREAD_GRAYSCALE)
+        mask = cv2.resize(mask, (master.shape[1], master.shape[0]))
+        mask = cv2.threshold(mask, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+        diff2 = cv2.absdiff(mask, thresholded_diff)
+        similarity_score = ssim(diff2, mask)
+        ssim_values[i] = similarity_score
+        differences[i] = diff2
+        print(similarity_score)
+        if similarity_score > 0.85:
+            contours, _ = cv2.findContours(
+                thresholded_diff, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+            highlighted_image = aligned_image.copy()
+            cnt = 0
+            for contour in contours:
+                found = False
+                for c in mask_contours:
+                    if cv2.matchShapes(contour, c, 1, 0.0) < 15:
+                        found = True
+                        break
+                if found:
+                    cv2.drawContours(highlighted_image, [contour], -1, (0, 0, 255), 2)
+                    cnt += 1
+                    classes[i] = 1
+    if classes.count(1) >= 2:
+        return None, True
+    idx_arr = [ssim_values[i] for i in range(3) if classes[i] == 0]
+    print(ssim_values)
+    print(idx_arr)
+    print(classes)
+    max_idx = ssim_values.index(max(idx_arr))
+    return differences[max_idx], False
+
+
+def capture_distinct_frames(num_frames=3, min_delay=0.05):
+    frames = []
+    for i in range(num_frames):
+        # Clear buffer
+        ueye.is_CaptureVideo(hCam, ueye.IS_DONT_WAIT)
+        time.sleep(min_delay)  # Delay between captures
+
+        # Capture new frame
+        image_buffer = np.zeros((camera_height, camera_width, 3), dtype=np.uint8)
+        ret = ueye.is_FreezeVideo(hCam, ueye.IS_WAIT)
+        if ret != ueye.IS_SUCCESS:
+            raise RuntimeError(f"Frame capture failed: {ret}")
+
+        # Copy to buffer
+        ueye.is_CopyImageMem(hCam, mem_ptr, mem_id, image_buffer.ctypes.data)
+
+        # Verify frame is distinct
+        if frames:
+            diff = cv2.absdiff(frames[-1], image_buffer)
+            if np.mean(diff) < 1.0:  # Threshold for distinctness
+                continue  # Skip similar frame
+
+        frames.append(image_buffer.copy())
+        filename = f"frame_{i}.png"
+        cv2.imwrite(os.path.join(save_directory, filename), image_buffer)
+
+    return [os.path.join(save_directory, f"frame_{i}.png") for i in range(num_frames)]
 
 
 @app.route("/capture", methods=["POST"])
 def capture():
-    # Create the image buffer for capturing frames
-    image_buffer = np.zeros((camera_height, camera_width, 3), dtype=np.uint8)
 
-    # Capture an image frame
-    ret = ueye.is_FreezeVideo(hCam, ueye.IS_WAIT)
-    if ret != ueye.IS_SUCCESS:
-        return (
-            jsonify({"error": f"Failed to capture frame with error code: {ret}"}),
-            500,
-        )
-
-    # Copy image data to the buffer
-    ueye.is_CopyImageMem(hCam, mem_ptr, mem_id, image_buffer.ctypes.data)
-
-    # Capture predefined sections
-    captured_images = capture_frame(image_buffer)
-
-    # Check for defects
+    captured_images = capture_distinct_frames()
+    if len(captured_images) < 3:
+        return jsonify({"error": "Could not capture enough distinct frames"}), 500
     master = request.files["master"]
     master = cv2.imdecode(np.frombuffer(master.read(), np.uint8), cv2.IMREAD_COLOR)
-    highlighted_image = find_defect(master, captured_images)
+    highlighted_image, res = find_defect(master, captured_images)
+    if highlighted_image is None:
+        return jsonify({"res": res})
     cv2.imwrite("highlighted_image.png", highlighted_image)
     img = cv2.imread("highlighted_image.png")
     _, img_encoded = cv2.imencode(".png", img)
     highlighted_image_data_url = (
         f"data:image/png;base64,{base64.b64encode(img_encoded).decode('utf-8')}"
     )
-    return jsonify({"highlighted_image": highlighted_image_data_url})
+    return jsonify({"highlighted_image": highlighted_image_data_url, "res": res})
 
 
 if __name__ == "__main__":
