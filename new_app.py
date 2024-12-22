@@ -187,13 +187,13 @@ def find_defect(master, images):
             print(similarity_score)
             if similarity_score > 0.85:
                 classes[i] = 1
+        print(classes)
         if classes.count(1) > 2:
             max_ssim = [ssim_values[i] for i in range(NO_FRAMES) if classes[i] == 1]
             max_idx = ssim_values.index(max(max_ssim))
             captured_correct = cv2.imread(images[max_idx])
             return captured_correct, "Pass"
         idx_arr = [ssim_values[i] for i in range(NO_FRAMES) if classes[i] == 0]
-        print(classes)
         max_idx = ssim_values.index(max(idx_arr))
         captured_incorrect = cv2.imread(images[max_idx])
         return captured_incorrect, "Fail"
