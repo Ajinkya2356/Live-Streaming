@@ -12,13 +12,11 @@ app = Flask(__name__)
 
 CORS(app)
 
-# Initialize the camera
 hCam = ueye.HIDS(0)
 sInfo = ueye.SENSORINFO()
 cInfo = ueye.CAMINFO()
 rectAOI = ueye.IS_RECT()
 
-# Initialize the camera
 ret = ueye.is_InitCamera(hCam, None)
 if ret != ueye.IS_SUCCESS:
     raise Exception(f"Camera initialization failed with error code: {ret}")
@@ -51,6 +49,13 @@ ueye.is_SetImageMem(hCam, mem_ptr, mem_id)
 # Start video capture
 ueye.is_CaptureVideo(hCam, ueye.IS_WAIT)
 
+save_directory = "./section_2_clear"
+if not os.path.exists(save_directory):
+    os.makedirs(save_directory)
+
+DELAY_FRAMES = 0.04
+NO_FRAMES = 3
+
 
 def generate_frames():
     while True:
@@ -72,36 +77,6 @@ def generate_frames():
         yield (b"--frame\r\n" b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
 
 
-save_directory = "./section_2_clear"
-if not os.path.exists(save_directory):
-    os.makedirs(save_directory)
-
-
-def capture_frame(frame, num_captures=4):
-    captured_files = []
-    for i in range(num_captures):
-        filename = os.path.join(save_directory, f"captured_{i}.png")
-        cv2.imwrite(filename, frame)
-        captured_files.append(filename)
-        cv2.waitKey(100)
-    return captured_files
-
-
-@app.route("/")
-def index():
-    return render_template("index.html")
-
-
-@app.route("/video_feed")
-def video_feed():
-    return Response(
-        generate_frames(), mimetype="multipart/x-mixed-replace; boundary=frame"
-    )
-
-
-""" capture and check simulatenously """
-
-
 def preprocess_image(image):
     # Convert to grayscale
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -121,17 +96,6 @@ def align_images(master, input):
         if m.distance < 0.75 * n.distance:
             good_matches.append(m)
     good_matches = sorted(good_matches, key=lambda x: x.distance)
-    matches_image = cv2.drawMatches(
-        master_preprocessed,
-        keypoints1,
-        input_preprocessed,
-        keypoints2,
-        good_matches[:50],
-        None,
-        matchColor=(0, 255, 0),
-        singlePointColor=(255, 0, 0),
-        flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS,
-    )
     if len(good_matches) >= 4:
         pts1 = np.float32([keypoints1[m.queryIdx].pt for m in good_matches]).reshape(
             -1, 1, 2
@@ -166,9 +130,10 @@ def align_images(master, input):
 
 
 def find_defect(master, images):
-    ssim_values = [0, 0, 0, 0]
-    classes = [0, 0, 0, 0]
-    differences = [None, None, None, None]
+    ssim_values = [0] * NO_FRAMES
+    classes = [0] * NO_FRAMES
+    differences = [None] * NO_FRAMES
+    print("DETECTION FUNCTION")
     for i, img_path in enumerate(images):
         input_path = img_path
         input = cv2.imread(input_path)
@@ -188,32 +153,16 @@ def find_defect(master, images):
         differences[i] = diff2
         print(similarity_score)
         if similarity_score > 0.85:
-            contours, _ = cv2.findContours(
-                thresholded_diff, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-            )
-            highlighted_image = aligned_image.copy()
-            cnt = 0
-            for contour in contours:
-                found = False
-                for c in mask_contours:
-                    if cv2.matchShapes(contour, c, 1, 0.0) < 15:
-                        found = True
-                        break
-                if found:
-                    cv2.drawContours(highlighted_image, [contour], -1, (0, 0, 255), 2)
-                    cnt += 1
-                    classes[i] = 1
+            classes[i] = 1
     if classes.count(1) > 2:
         return None, True
-    idx_arr = [ssim_values[i] for i in range(4) if classes[i] == 0]
-    print(ssim_values)
-    print(idx_arr)
+    idx_arr = [ssim_values[i] for i in range(NO_FRAMES) if classes[i] == 0]
     print(classes)
     max_idx = ssim_values.index(max(idx_arr))
     return differences[max_idx], False
 
 
-def capture_distinct_frames(num_frames=4, min_delay=0.5):
+def capture_distinct_frames(num_frames=3, min_delay=0.5):
     frames = []
     for i in range(num_frames):
         # Clear buffer
@@ -236,11 +185,25 @@ def capture_distinct_frames(num_frames=4, min_delay=0.5):
     return [os.path.join(save_directory, f"frame_{i}.png") for i in range(num_frames)]
 
 
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/video_feed")
+def video_feed():
+    return Response(
+        generate_frames(), mimetype="multipart/x-mixed-replace; boundary=frame"
+    )
+
+
 @app.route("/capture", methods=["POST"])
 def capture():
 
-    captured_images = capture_distinct_frames()
-    if len(captured_images) < 4:
+    captured_images = capture_distinct_frames(
+        num_frames=NO_FRAMES, min_delay=DELAY_FRAMES
+    )
+    if len(captured_images) < NO_FRAMES:
         return jsonify({"error": "Could not capture enough distinct frames"}), 500
     master = request.files["master"]
     master = cv2.imdecode(np.frombuffer(master.read(), np.uint8), cv2.IMREAD_COLOR)
