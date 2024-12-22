@@ -192,11 +192,11 @@ def find_defect(master, images):
             max_ssim = [ssim_values[i] for i in range(NO_FRAMES) if classes[i] == 1]
             max_idx = ssim_values.index(max(max_ssim))
             captured_correct = cv2.imread(images[max_idx])
-            return captured_correct, "Pass"
+            return captured_correct, "pass"
         idx_arr = [ssim_values[i] for i in range(NO_FRAMES) if classes[i] == 0]
         max_idx = ssim_values.index(max(idx_arr))
         captured_incorrect = cv2.imread(images[max_idx])
-        return captured_incorrect, "Fail"
+        return captured_incorrect, "fail"
     except Exception as e:
         raise ImageProcessingError(f"Defect detection failed: {str(e)}")
 
