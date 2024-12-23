@@ -33,6 +33,7 @@ def handle_camera_error(error):
 
 @app.errorhandler(ImageProcessingError)
 def handle_image_processing_error(error):
+    print(error)
     return jsonify({"error": "Error occured in Image Processing!"}), 422
 
 
@@ -143,6 +144,7 @@ def align_images(master, input):
         aligned_image = cv2.warpPerspective(
             input, H, (master.shape[1], master.shape[0])
         )
+
         _, mask_master = cv2.threshold(
             master_preprocessed, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
         )
@@ -150,13 +152,14 @@ def align_images(master, input):
             mask_master, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
         aligned_image_gray = cv2.cvtColor(aligned_image, cv2.COLOR_BGR2GRAY)
+        absolute = cv2.absdiff(master_preprocessed, aligned_image_gray)
         aligned_thresh = cv2.threshold(
             aligned_image_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
         )[1]
         result = cv2.bitwise_or(mask_master, aligned_thresh)
         result = cv2.threshold(result, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
 
-        return result, aligned_image, mask_contours, mask_master
+        return result, aligned_image, mask_contours, mask_master, absolute
     except Exception as e:
         raise AlignmentError(f"Image alignment failed: {str(e)}")
 
@@ -164,34 +167,47 @@ def align_images(master, input):
 def find_defect(master, images, serial_no, model_name):
     try:
         ssim_values = [0] * NO_FRAMES
+        abs_ssim_values = [0] * NO_FRAMES
         classes = [0] * NO_FRAMES
         differences = [None] * NO_FRAMES
-        print("DETECTION FUNCTION")
         for i, img_path in enumerate(images):
             input_path = img_path
             input = cv2.imread(input_path)
             input = cv2.resize(input, (master.shape[1], master.shape[0]))
-            difference, aligned_image, mask_contours, mask_master = align_images(
-                master, input
+            difference, aligned_image, mask_contours, mask_master, absolute = (
+                align_images(master, input)
             )
+            absolute_master = cv2.imread("absolute_master.png")
+            absolute_master = cv2.cvtColor(absolute_master, cv2.COLOR_BGR2GRAY)
+            ssim_diff = ssim(absolute, absolute_master)
+            abs_ssim_values[i] = ssim_diff
             _, thresholded_diff = cv2.threshold(
                 difference, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
             )
-            mask = cv2.imread("diff_ref.png", cv2.IMREAD_GRAYSCALE)
+            mask = cv2.imread("black.png", cv2.IMREAD_GRAYSCALE)
             mask = cv2.resize(mask, (master.shape[1], master.shape[0]))
             mask = cv2.threshold(mask, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
             diff2 = cv2.absdiff(mask, thresholded_diff)
             similarity_score = ssim(diff2, mask)
             ssim_values[i] = similarity_score
             differences[i] = diff2
-            print(similarity_score)
             if similarity_score > 0.85:
                 classes[i] = 1
+        print(ssim_values)
+        print(abs_ssim_values)
         print(classes)
         if classes.count(1) >= 2:
             max_ssim = [ssim_values[i] for i in range(NO_FRAMES) if classes[i] == 1]
             max_idx = ssim_values.index(max(max_ssim))
             captured_correct = cv2.imread(images[max_idx])
+            cv2.imwrite("difference_correct.png", differences[max_idx])
+            diff_cirr = cv2.imread("difference_correct.png")
+            save_in_directory(
+                "Risabh Images",
+                f"{model_name}",
+                [captured_correct, diff_cirr],
+                [f"{serial_no}.png", f"{serial_no}_diff.png"],
+            )
             return captured_correct, None, "pass"
         idx_arr = [ssim_values[i] for i in range(NO_FRAMES) if classes[i] == 0]
         max_idx = ssim_values.index(max(idx_arr))
@@ -199,10 +215,10 @@ def find_defect(master, images, serial_no, model_name):
         cv2.imwrite("different_incorrect.png", differences[max_idx])
         diff = cv2.imread("different_incorrect.png")
         save_in_directory(
-            "Risabh Defects",
+            "Risabh Images",
             f"{model_name}",
-            [captured_incorrect],
-            [f"{serial_no}.png"],
+            [captured_incorrect, diff],
+            [f"{serial_no}.png", f"{serial_no}_diff.png"],
         )
         return captured_incorrect, diff, "fail"
     except Exception as e:
