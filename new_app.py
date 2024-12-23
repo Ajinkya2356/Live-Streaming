@@ -28,17 +28,17 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 
 @app.errorhandler(CameraError)
 def handle_camera_error(error):
-    return jsonify({"error": str(error)}), 500
+    return jsonify({"error": "Camera Error"}), 500
 
 
 @app.errorhandler(ImageProcessingError)
 def handle_image_processing_error(error):
-    return jsonify({"error": str(error)}), 422
+    return jsonify({"error": "Error occured in Image Processing!"}), 422
 
 
 @app.errorhandler(AlignmentError)
 def handle_alignment_error(error):
-    return jsonify({"error": str(error)}), 422
+    return jsonify({"error": "Image Alignment Failed"}), 422
 
 
 @app.errorhandler(Exception)
@@ -161,7 +161,7 @@ def align_images(master, input):
         raise AlignmentError(f"Image alignment failed: {str(e)}")
 
 
-def find_defect(master, images):
+def find_defect(master, images, serial_no, model_name):
     try:
         ssim_values = [0] * NO_FRAMES
         classes = [0] * NO_FRAMES
@@ -188,16 +188,23 @@ def find_defect(master, images):
             if similarity_score > 0.85:
                 classes[i] = 1
         print(classes)
-        if classes.count(1) > 2:
+        if classes.count(1) >= 2:
             max_ssim = [ssim_values[i] for i in range(NO_FRAMES) if classes[i] == 1]
             max_idx = ssim_values.index(max(max_ssim))
             captured_correct = cv2.imread(images[max_idx])
-            return captured_correct, "pass"
+            return captured_correct, None, "pass"
         idx_arr = [ssim_values[i] for i in range(NO_FRAMES) if classes[i] == 0]
         max_idx = ssim_values.index(max(idx_arr))
         captured_incorrect = cv2.imread(images[max_idx])
-        cv2.imwrite(f"./section_2_clear/difference_{max_idx}.png", differences[max_idx])
-        return captured_incorrect, "fail"
+        cv2.imwrite("different_incorrect.png", differences[max_idx])
+        diff = cv2.imread("different_incorrect.png")
+        save_in_directory(
+            "Risabh Defects",
+            f"{model_name}",
+            [captured_incorrect],
+            [f"{serial_no}.png"],
+        )
+        return captured_incorrect, diff, "fail"
     except Exception as e:
         raise ImageProcessingError(f"Defect detection failed: {str(e)}")
 
@@ -230,6 +237,27 @@ def capture_distinct_frames(num_frames=3, min_delay=0.5):
         raise Exception("Not enought images captured")
 
 
+def save_in_directory(root_dir, subdir, images, names):
+    try:
+        # Create root directory if it doesn't exist
+        if not os.path.exists(root_dir):
+            os.makedirs(root_dir)
+
+        # Create subdirectory inside root directory
+        subdir_path = os.path.join(root_dir, subdir)
+        if not os.path.exists(subdir_path):
+            os.makedirs(subdir_path)
+
+        # Save images with provided names
+        for image, name in zip(images, names):
+            image_path = os.path.join(subdir_path, name)
+            cv2.imwrite(image_path, image)
+
+        return
+    except Exception as e:
+        raise Exception(f"Failed to save images: {str(e)}")
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -245,6 +273,10 @@ def video_feed():
 @app.route("/capture", methods=["POST"])
 def capture():
     try:
+        serial_no = request.form["serial_no"]
+        model_name = request.form["model_type"]
+        if not serial_no or not model_name:
+            return ImageProcessingError("Serial number or model name not provided"), 400
         captured_images = capture_distinct_frames(
             num_frames=NO_FRAMES, min_delay=DELAY_FRAMES
         )
@@ -259,13 +291,19 @@ def capture():
         with open(master_path, "wb") as f:
             f.write(master_data)
         master = cv2.imread(master_path)
-        image, res = find_defect(master, captured_images)
+        image, diff, res = find_defect(master, captured_images, serial_no, model_name)
         _, buffer = cv2.imencode(".png", image)
+        _, diff = cv2.imencode(".png", diff) if diff is not None else (None, None)
         image_base64 = base64.b64encode(buffer).decode("utf-8")
-
+        diff_base64 = (
+            base64.b64encode(diff).decode("utf-8") if diff is not None else None
+        )
         return jsonify(
             {
                 "image": f"data:image/png;base64,{image_base64}",
+                "diff": (
+                    f"data:image/png;base64,{diff_base64}" if diff is not None else None
+                ),
                 "res": res,
             }
         )
