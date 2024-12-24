@@ -177,9 +177,12 @@ def find_defect(master, images, serial_no, model_name):
             difference, aligned_image, mask_contours, mask_master, absolute = (
                 align_images(master, input)
             )
+            cv2.imwrite("absolute.png", absolute)
             absolute_master = cv2.imread("absolute_master.png")
             absolute_master = cv2.cvtColor(absolute_master, cv2.COLOR_BGR2GRAY)
             ssim_diff = ssim(absolute, absolute_master)
+            abs_diff = cv2.absdiff(absolute, absolute_master)
+            cv2.imwrite("difference_abs.png", abs_diff)
             abs_ssim_values[i] = ssim_diff
             _, thresholded_diff = cv2.threshold(
                 difference, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
@@ -191,7 +194,7 @@ def find_defect(master, images, serial_no, model_name):
             similarity_score = ssim(diff2, mask)
             ssim_values[i] = similarity_score
             differences[i] = diff2
-            if similarity_score > 0.85:
+            if similarity_score > 0.90:
                 classes[i] = 1
         print(ssim_values)
         print(abs_ssim_values)
@@ -208,7 +211,7 @@ def find_defect(master, images, serial_no, model_name):
                 [captured_correct, diff_cirr],
                 [f"{serial_no}.png", f"{serial_no}_diff.png"],
             )
-            return captured_correct, None, "pass"
+            return captured_correct, diff_cirr, "pass"
         idx_arr = [ssim_values[i] for i in range(NO_FRAMES) if classes[i] == 0]
         max_idx = ssim_values.index(max(idx_arr))
         captured_incorrect = cv2.imread(images[max_idx])
