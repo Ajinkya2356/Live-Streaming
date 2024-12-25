@@ -164,12 +164,42 @@ def align_images(master, input):
         raise AlignmentError(f"Image alignment failed: {str(e)}")
 
 
+def clean_image(image):
+    num_labels, labels = cv2.connectedComponents(image)
+    min_size_threshold = 30
+    height_threshold = 1000
+    width_threshold = 2
+    valid_object_count = 0
+
+    # Create single channel output image
+    output_image = np.zeros_like(image, dtype=np.uint8)
+    component_sizes = np.bincount(labels.ravel())
+
+    for label in range(1, num_labels):
+        if component_sizes[label] > min_size_threshold:
+            coords = np.argwhere(labels == label)
+            min_y, min_x = coords.min(axis=0)
+            max_y, max_x = coords.max(axis=0)
+            width, height = max_x - min_x, max_y - min_y
+
+            if (width < width_threshold and height < height_threshold) or (
+                height < width_threshold and width < height_threshold
+            ):
+                output_image[labels == label] = 0  # Exclude objects
+            else:
+                output_image[labels == label] = 255  # Valid objects in white
+                valid_object_count += 1
+
+    return output_image
+
+
 def find_defect(master, images, serial_no, model_name):
     try:
-        ssim_values = [0] * NO_FRAMES
-        abs_ssim_values = [0] * NO_FRAMES
         classes = [0] * NO_FRAMES
         differences = [None] * NO_FRAMES
+        contours_no = [0] * NO_FRAMES
+        mapping = [0] * NO_FRAMES
+        operator_dependent = False
         for i, img_path in enumerate(images):
             input_path = img_path
             input = cv2.imread(input_path)
@@ -177,31 +207,35 @@ def find_defect(master, images, serial_no, model_name):
             difference, aligned_image, mask_contours, mask_master, absolute = (
                 align_images(master, input)
             )
-            cv2.imwrite("absolute.png", absolute)
-            absolute_master = cv2.imread("absolute_master.png")
-            absolute_master = cv2.cvtColor(absolute_master, cv2.COLOR_BGR2GRAY)
-            ssim_diff = ssim(absolute, absolute_master)
-            abs_diff = cv2.absdiff(absolute, absolute_master)
-            cv2.imwrite("difference_abs.png", abs_diff)
-            abs_ssim_values[i] = ssim_diff
             _, thresholded_diff = cv2.threshold(
                 difference, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
             )
-            mask = cv2.imread("black.png", cv2.IMREAD_GRAYSCALE)
-            mask = cv2.resize(mask, (master.shape[1], master.shape[0]))
-            mask = cv2.threshold(mask, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-            diff2 = cv2.absdiff(mask, thresholded_diff)
-            similarity_score = ssim(diff2, mask)
-            ssim_values[i] = similarity_score
-            differences[i] = diff2
-            if similarity_score > 0.90:
+            cv2.imwrite(f"diff{i}.png", thresholded_diff)
+            cleaned_diff = clean_image(thresholded_diff)
+            cnt, _ = cv2.findContours(
+                cleaned_diff, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+            copy = aligned_image.copy()
+            counter = 0
+            for captured_cnt in cnt:
+                for master_cnt in mask_contours:
+                    if cv2.matchShapes(captured_cnt, master_cnt, 1, 0.0) < 5:
+                        cv2.drawContours(copy, [captured_cnt], -1, (0, 255, 0), 3)
+                        counter += 1
+                        break
+            cv2.imwrite(f"red{i}.png", copy)
+            contours_no[i] = len(cnt)
+            mapping[i] = counter
+            differences[i] = cleaned_diff
+            if len(cnt) == 0 and counter == 0:
                 classes[i] = 1
-        print(ssim_values)
-        print(abs_ssim_values)
+            elif len(cnt) > 0 and counter == 0:
+                operator_dependent = True
         print(classes)
+        print(contours_no)
+        print(mapping)
+        max_idx = contours_no.index(max(contours_no))
         if classes.count(1) >= 2:
-            max_ssim = [ssim_values[i] for i in range(NO_FRAMES) if classes[i] == 1]
-            max_idx = ssim_values.index(max(max_ssim))
             captured_correct = cv2.imread(images[max_idx])
             cv2.imwrite("difference_correct.png", differences[max_idx])
             diff_cirr = cv2.imread("difference_correct.png")
@@ -211,9 +245,7 @@ def find_defect(master, images, serial_no, model_name):
                 [captured_correct, diff_cirr],
                 [f"{serial_no}.png", f"{serial_no}_diff.png"],
             )
-            return captured_correct, diff_cirr, "pass"
-        idx_arr = [ssim_values[i] for i in range(NO_FRAMES) if classes[i] == 0]
-        max_idx = ssim_values.index(max(idx_arr))
+            return captured_correct, diff_cirr, "pass", operator_dependent
         captured_incorrect = cv2.imread(images[max_idx])
         cv2.imwrite("different_incorrect.png", differences[max_idx])
         diff = cv2.imread("different_incorrect.png")
@@ -223,7 +255,7 @@ def find_defect(master, images, serial_no, model_name):
             [captured_incorrect, diff],
             [f"{serial_no}.png", f"{serial_no}_diff.png"],
         )
-        return captured_incorrect, diff, "fail"
+        return captured_incorrect, diff, "fail", operator_dependent
     except Exception as e:
         raise ImageProcessingError(f"Defect detection failed: {str(e)}")
 
@@ -310,7 +342,9 @@ def capture():
         with open(master_path, "wb") as f:
             f.write(master_data)
         master = cv2.imread(master_path)
-        image, diff, res = find_defect(master, captured_images, serial_no, model_name)
+        image, diff, res, od = find_defect(
+            master, captured_images, serial_no, model_name
+        )
         _, buffer = cv2.imencode(".png", image)
         _, diff = cv2.imencode(".png", diff) if diff is not None else (None, None)
         image_base64 = base64.b64encode(buffer).decode("utf-8")
@@ -324,6 +358,7 @@ def capture():
                     f"data:image/png;base64,{diff_base64}" if diff is not None else None
                 ),
                 "res": res,
+                "od": od,
             }
         )
     except (CameraError, ImageProcessingError, AlignmentError) as e:
