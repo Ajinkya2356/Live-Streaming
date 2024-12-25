@@ -159,7 +159,13 @@ def align_images(master, input):
         result = cv2.bitwise_or(mask_master, aligned_thresh)
         result = cv2.threshold(result, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
 
-        return result, aligned_image, mask_contours, mask_master, absolute
+        master_thresh = cv2.threshold(
+            master_preprocessed, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+        )[1]
+        master_cont = cv2.findContours(
+            master_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )[0]
+        return result, aligned_image, master_cont, master_thresh, absolute
     except Exception as e:
         raise AlignmentError(f"Image alignment failed: {str(e)}")
 
@@ -207,6 +213,10 @@ def find_defect(master, images, serial_no, model_name):
             difference, aligned_image, mask_contours, mask_master, absolute = (
                 align_images(master, input)
             )
+            master_copy = master.copy()
+            cv2.drawContours(master_copy, mask_contours, -1, (0, 255, 0), 3)
+            cv2.imwrite(f"master{i}.png", master_copy)
+            print(len(mask_contours))
             _, thresholded_diff = cv2.threshold(
                 difference, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
             )
@@ -219,7 +229,7 @@ def find_defect(master, images, serial_no, model_name):
             counter = 0
             for captured_cnt in cnt:
                 for master_cnt in mask_contours:
-                    if cv2.matchShapes(captured_cnt, master_cnt, 1, 0.0) < 5:
+                    if cv2.matchShapes(captured_cnt, master_cnt, 1, 0.0) < 0.1:
                         cv2.drawContours(copy, [captured_cnt], -1, (0, 255, 0), 3)
                         counter += 1
                         break
